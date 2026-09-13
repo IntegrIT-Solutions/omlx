@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 import sys
 import threading
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Optional
 
 ROOT = Path.cwd()
@@ -33,8 +33,13 @@ def selected_code(path, names=None, include_assignments=False):
     for node in parsed.body:
         if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and (names is None or node.name in names):
             nodes.append(node)
-        elif include_assignments and isinstance(node, (ast.Assign, ast.AnnAssign)):
-            nodes.append(node)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if include_assignments or any(
+                isinstance(target, ast.Name) and names and target.id in names
+                for target in targets
+            ):
+                nodes.append(node)
     return compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])), str(path), 'exec')
 
 
@@ -56,13 +61,15 @@ def main():
     module('omlx', ROOT / 'omlx')
     module('omlx.patches', ROOT / 'omlx/patches')
     monitor = module('omlx.memory_monitor')
-    monitor.SDPA256_UNFUSED_SCORE_DTYPE_SIZE = 4
-    exec(selected_code(ROOT / 'omlx/memory_monitor.py', {'estimate_unfused_sdpa_call_bytes'}), monitor.__dict__)
+    exec(selected_code(ROOT / 'omlx/memory_monitor.py', {
+        '_SDPA_FALLBACK_SCORE_DTYPE_SIZE', 'SDPA256_UNFUSED_SCORE_DTYPE_SIZE',
+        'estimate_unfused_sdpa_call_bytes',
+    }), monitor.__dict__)
     monitor.register_tiled_prefill_head_dim = lambda *a, **kw: None
     sdpa = module('omlx.patches.sdpa256_attention')
     sdpa.__dict__.update(logging=logging, os=os, threading=threading, weakref=weakref,
                          contextmanager=contextmanager, mx=mx,
-                         SDPA256_UNFUSED_SCORE_DTYPE_SIZE=4,
+                         SDPA256_UNFUSED_SCORE_DTYPE_SIZE=monitor.SDPA256_UNFUSED_SCORE_DTYPE_SIZE,
                          estimate_unfused_sdpa_call_bytes=monitor.estimate_unfused_sdpa_call_bytes)
     exec(selected_code(ROOT / 'omlx/patches/sdpa256_attention.py', include_assignments=True), sdpa.__dict__)
     tq = module('omlx.patches.turboquant_attention')
@@ -71,6 +78,13 @@ def main():
                        _patch_update_eval_policy=lambda: None,
                        _patch_vlm_target_verify_attention=lambda: None)
     exec(selected_code(ROOT / 'omlx/patches/turboquant_attention.py', {'apply_turboquant_attention_patch'}), tq.__dict__)
+    fa = module('omlx.patches.qwen35_fa256_attention')
+    fa.__dict__.update(os=os, sys=sys, mx=mx, logging=logging,
+                       _fa256_fast=SimpleNamespace(fa256_supports_dispatch_budget=lambda: True),
+                       _native_kernel=lambda: None, is_nax_available=lambda: False,
+                       _should_route=lambda *args: False)
+    exec(selected_code(ROOT / 'omlx/patches/qwen35_fa256_attention.py',
+                       {'apply_qwen35_fa256_attention_patch'}, True), fa.__dict__)
     module('mlx_vlm.turboquant').TurboQuantKVCache = type('TurboQuantKVCache', (), {})
     tq_kv = module('omlx.turboquant_kv')
     tq_kv.BatchTurboQuantKVCache = type('BatchTurboQuantKVCache', (), {})
