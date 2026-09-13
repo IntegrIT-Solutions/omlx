@@ -51,6 +51,7 @@ class _Owner:
 
 @pytest.fixture(autouse=True)
 def isolated_provider(monkeypatch):
+    monkeypatch.setattr(sdpa, "_LM_SDPA256_WRAPPER", sdpa._LM_SDPA256_WRAPPER)
     monkeypatch.delenv("OMLX_SDPA256_TILED", raising=False)
     monkeypatch.setattr(sdpa, "_HEADROOM_PROVIDER_LOCAL", threading.local())
     monkeypatch.setattr(sdpa, "_FORCE_TILED", None)

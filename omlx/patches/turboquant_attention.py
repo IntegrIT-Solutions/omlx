@@ -668,6 +668,10 @@ def apply_turboquant_attention_patch() -> bool:
 
         return original_sdpa(queries, keys, values, cache, scale, mask, sinks)
 
+    # Preserve concrete provenance so SDPA256 can recognize legitimate
+    # aliases captured by DFlash before this wrapper was installed.
+    patched_sdpa._omlx_sdpa_original = original_sdpa
+
     # Patch the module attribute
     mlx_base.scaled_dot_product_attention = patched_sdpa
 

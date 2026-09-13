@@ -39,6 +39,7 @@ from omlx.memory_monitor import (
 logger = logging.getLogger(__name__)
 
 _PATCHED = False
+_LM_SDPA256_WRAPPER = None
 
 HEAD_DIM = 256
 # Force the bounded kernel only once the context is long enough that the
@@ -391,11 +392,47 @@ def _register_bounded_route(min_kv_len: int) -> bool:
     return True
 
 
+def _rebind_dflash_sdpa_aliases() -> None:
+    """Repair aliases of known implementations, including pre-TurboQuant ones.
+
+    Installation and alias coverage have different lifetimes. A DFlash helper
+    can retain an original captured before another oMLX wrapper was installed,
+    or can be imported/reloaded after our first installation. Follow only the
+    explicit provenance attached by oMLX wrappers; never infer ownership from
+    a function name or inspect arbitrary closures. Unrelated custom functions
+    are left alone. This runs at engine load, not on the attention hot path.
+    """
+    import sys
+
+    wrapper = _LM_SDPA256_WRAPPER
+    if wrapper is None:
+        return
+    originals = []
+    current = wrapper
+    seen = {id(wrapper)}
+    while True:
+        # Read concrete metadata, not dynamic __getattr__ on callable objects.
+        metadata = getattr(current, "__dict__", {})
+        current = metadata.get("_omlx_sdpa_original")
+        if current is None or id(current) in seen or not callable(current):
+            break
+        seen.add(id(current))
+        originals.append(current)
+
+    for name, module in list(sys.modules.items()):
+        if module is None or not name.startswith("dflash_mlx."):
+            continue
+        implementation = getattr(module, "scaled_dot_product_attention", None)
+        if any(implementation is original for original in originals):
+            module.scaled_dot_product_attention = wrapper
+
+
 def apply_sdpa256_attention_patch(min_kv_len: int = _SDPA256_MIN_KV_LEN) -> bool:
     """Monkey-patch mlx-lm's scaled_dot_product_attention for head_dim=256
     long-context prefill, and register the O(L) cost with the memory monitor."""
-    global _PATCHED, _SDPA256_MIN_KV_LEN, _FORCE_TILED
+    global _PATCHED, _SDPA256_MIN_KV_LEN, _FORCE_TILED, _LM_SDPA256_WRAPPER
     if _PATCHED:
+        _rebind_dflash_sdpa_aliases()
         return False
     _SDPA256_MIN_KV_LEN = min_kv_len
     _FORCE_TILED = _parse_force_tiled_env()
@@ -420,22 +457,24 @@ def apply_sdpa256_attention_patch(min_kv_len: int = _SDPA256_MIN_KV_LEN) -> bool
             return _flash_sdpa256(queries, keys, values, scale, mask, sinks)
         return original_sdpa(queries, keys, values, cache, scale, mask, sinks)
 
+    patched_sdpa._omlx_sdpa_original = original_sdpa
+    _LM_SDPA256_WRAPPER = patched_sdpa
     mlx_base.scaled_dot_product_attention = patched_sdpa
 
-    # Rebind model modules and DFlash helpers that captured the base
-    # function at import time (target_qwen_gdn and gqa_sdpa, #3241). Only
+    # Rebind model modules that captured the current base function.
+    # DFlash can hold an older pre-wrapper alias; reconcile it below. Only
     # rebind modules whose attribute IS the base function we wrapped — a model
     # that defined its own SDPA keeps it untouched (don't silently redirect a
     # model we never intended to patch).
     import sys
 
     for mod_name, mod in list(sys.modules.items()):
-        if mod is None or not mod_name.startswith(
-            ("mlx_lm.models.", "dflash_mlx.")
-        ):
+        if mod is None or not mod_name.startswith("mlx_lm.models."):
             continue
         if getattr(mod, "scaled_dot_product_attention", None) is original_sdpa:
             mod.scaled_dot_product_attention = patched_sdpa
+
+    _rebind_dflash_sdpa_aliases()
 
     # mlx-vlm carries its own base SDPA (a distinct function, TurboQuant-aware
     # cache handling included), and model modules like qwen3_5.language copy

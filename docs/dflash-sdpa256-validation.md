@@ -106,3 +106,37 @@ existing bounded implementation with the correct current guard. It does not
 resolve every memory-accounting or Auto-policy concern in issue #3241, nor does
 it establish a DFlash speedup over Lightning MTP. Keep the PR draft until the
 native integration and lifecycle checks above have been reviewed.
+
+
+## Review follow-up: retained pre-wrapper aliases
+
+SDPA256 now distinguishes base-wrapper installation from DFlash alias coverage.
+TurboQuant and FA256 record their original callables using private oMLX provenance metadata.
+SDPA256 reconciles DFlash aliases against that identity chain on both first and
+repeated installation. A legitimate reference captured before TurboQuant is
+repaired; a genuinely custom function is not replaced. The base wrapper is not
+stacked again, and a later outer wrapper on the base is left intact.
+
+Run the additional regression tests alongside the suites above:
+
+```bash
+python -m pytest -q tests/test_dflash_sdpa256_load_order.py \
+  tests/test_dflash_sdpa256_lifecycle.py tests/test_dflash_sdpa256_numerics.py
+```
+
+The load-order suite uses the actual TurboQuant and SDPA256 installers with
+shape-only inputs and an instrumented bounded dispatch. It covers pre-import,
+late import, repeated installation, an explicit early opt-out, provenance
+cycles, both installation orders, and preservation of unrelated custom code.
+It must not be described as a Metal or numerical test.
+
+The lifecycle tests exercise both real engine consumer entry points with fake
+DFlash events and asynchronous cancellation, checking the provider on the worker
+and on a subsequent request. The numerical tests use the actual pinned grouped
+GQA helper and bounded attention implementation with small arrays. They compare
+against an independent dense reference for causal, Boolean, and additive masks,
+including verification shapes that become eligible only after GQA reshaping.
+
+Native dependency tests, kernel execution, and 48 GiB hardware results must be
+recorded separately. An isolated host-side extraction of repository functions
+is not a substitute for running these complete files with pinned dependencies.
