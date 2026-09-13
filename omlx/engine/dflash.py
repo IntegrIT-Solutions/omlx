@@ -537,6 +537,19 @@ class DFlashEngine(ActivityTrackingMixin, BaseEngine):
         runtime_context = self._build_runtime_context()
 
         def _load_models():
+            # Install on the inference worker before loading the target.
+            # The installer also rebinds DFlash helpers already imported
+            # by runtime-context construction (#3241).
+            if (
+                getattr(self._model_settings, "sdpa256_prefill_enabled", True)
+                is not False
+            ):
+                from ..patches.sdpa256_attention import (
+                    apply_sdpa256_attention_patch,
+                )
+
+                apply_sdpa256_attention_patch()
+
             from dflash_mlx.draft_backend import EagerDraftBackend
             from dflash_mlx.engine.target_ops import bind_draft_to_target
             from dflash_mlx.runtime.loading import (
@@ -1208,7 +1221,16 @@ class DFlashEngine(ActivityTrackingMixin, BaseEngine):
         )
         if hasattr(prefix_flow, "snapshot"):
             prefix_flow.snapshot = None
-        return event_iter, prefix_flow, stop_ids
+        # Both streaming and non-streaming consumers iterate on the MLX
+        # executor and close the iterator in finally. Scope the provider
+        # to that iteration, not to model load or the event-loop thread.
+        from ..patches.dflash_sdpa256 import dflash_sdpa256_events
+
+        return (
+            dflash_sdpa256_events(event_iter, self._prefill_guard),
+            prefix_flow,
+            stop_ids,
+        )
 
     @staticmethod
     def _cached_tokens_from_flow(prefix_flow) -> int:

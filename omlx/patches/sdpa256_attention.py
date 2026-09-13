@@ -27,6 +27,7 @@ import logging
 import os
 import threading
 import weakref
+from contextlib import contextmanager
 
 import mlx.core as mx
 
@@ -98,6 +99,25 @@ def set_unfused_headroom_provider(method) -> None:
 def _get_unfused_headroom_provider():
     ref = getattr(_HEADROOM_PROVIDER_LOCAL, "ref", None)
     return ref() if ref is not None else None
+
+
+@contextmanager
+def scoped_unfused_headroom_provider(method):
+    """Temporarily bind a provider on the current inference worker.
+
+    Save the weak reference, not the bound method: a scope must not prolong
+    the previous engine's lifetime. None masks a previous provider and keeps
+    the bounded default. Restore even on cancellation or generator close.
+    """
+    previous = getattr(_HEADROOM_PROVIDER_LOCAL, "ref", None)
+    try:
+        if method is None:
+            _HEADROOM_PROVIDER_LOCAL.ref = None
+        else:
+            set_unfused_headroom_provider(method)
+        yield
+    finally:
+        _HEADROOM_PROVIDER_LOCAL.ref = previous
 
 
 def _parse_force_tiled_env() -> bool | None:
@@ -402,15 +422,17 @@ def apply_sdpa256_attention_patch(min_kv_len: int = _SDPA256_MIN_KV_LEN) -> bool
 
     mlx_base.scaled_dot_product_attention = patched_sdpa
 
-    # Rebind already-imported model modules that did
-    # `from .base import scaled_dot_product_attention` at import time. Only
+    # Rebind model modules and DFlash helpers that captured the base
+    # function at import time (target_qwen_gdn and gqa_sdpa, #3241). Only
     # rebind modules whose attribute IS the base function we wrapped — a model
     # that defined its own SDPA keeps it untouched (don't silently redirect a
     # model we never intended to patch).
     import sys
 
     for mod_name, mod in list(sys.modules.items()):
-        if mod is None or not mod_name.startswith("mlx_lm.models."):
+        if mod is None or not mod_name.startswith(
+            ("mlx_lm.models.", "dflash_mlx.")
+        ):
             continue
         if getattr(mod, "scaled_dot_product_attention", None) is original_sdpa:
             mod.scaled_dot_product_attention = patched_sdpa
