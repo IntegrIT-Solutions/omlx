@@ -9,9 +9,14 @@ import pytest
 from omlx.patches import sdpa256_attention as sdpa
 
 
-@pytest.mark.parametrize("dtype_name,tolerance", [
-    ("float32", 2e-4), ("float16", 3e-3), ("bfloat16", 2e-2),
-])
+@pytest.mark.parametrize(
+    "dtype_name,tolerance",
+    [
+        ("float32", 2e-4),
+        ("float16", 3e-3),
+        ("bfloat16", 2e-2),
+    ],
+)
 @pytest.mark.parametrize("q_len", [4, 16])
 @pytest.mark.parametrize("mask_kind", ["causal", "boolean", "additive"])
 def test_grouped_gqa_bounded_numerical_parity(
@@ -23,11 +28,16 @@ def test_grouped_gqa_bounded_numerical_parity(
 
     # Preserve existing application/test-installed aliases and global state.
     for name, module in list(sys.modules.items()):
-        if module is not None and name.startswith(
-            ("mlx_lm.models.", "mlx_vlm.models.", "dflash_mlx.")
-        ) and "scaled_dot_product_attention" in vars(module):
-            monkeypatch.setattr(module, "scaled_dot_product_attention",
-                                module.scaled_dot_product_attention)
+        if (
+            module is not None
+            and name.startswith(("mlx_lm.models.", "mlx_vlm.models.", "dflash_mlx."))
+            and "scaled_dot_product_attention" in vars(module)
+        ):
+            monkeypatch.setattr(
+                module,
+                "scaled_dot_product_attention",
+                module.scaled_dot_product_attention,
+            )
     monkeypatch.setattr(sdpa, "_PATCHED", False)
     monkeypatch.setattr(sdpa, "_LM_SDPA256_WRAPPER", None)
     monkeypatch.setattr(sdpa, "_FORCE_TILED", None)
@@ -35,8 +45,9 @@ def test_grouped_gqa_bounded_numerical_parity(
     monkeypatch.setenv("OMLX_SDPA256_TILED", "1")
     monkeypatch.setattr(sdpa, "_register_bounded_route", lambda _: True)
     # Rebind this test's helper to the exact current base before installation.
-    monkeypatch.setattr(gqa_sdpa, "scaled_dot_product_attention",
-                        lm_base.scaled_dot_product_attention)
+    monkeypatch.setattr(
+        gqa_sdpa, "scaled_dot_product_attention", lm_base.scaled_dot_product_attention
+    )
     native_bounded = sdpa._flash_sdpa256
     routed = []
 
@@ -62,7 +73,9 @@ def test_grouped_gqa_bounded_numerical_parity(
         actual = gqa_sdpa.grouped_gqa_sdpa(q, k, v, scale=0.0625, mask=mask)
         mx.eval(actual)
     # Independent dense attention on the original, ungrouped head layout.
-    q_np, k_np, v_np = [np.array(x.astype(mx.float32)).astype(np.float64) for x in (q, k, v)]
+    q_np, k_np, v_np = [
+        np.array(x.astype(mx.float32)).astype(np.float64) for x in (q, k, v)
+    ]
     logits = q_np @ np.swapaxes(np.repeat(k_np, 4, axis=1), -1, -2) * 0.0625
     logits = np.where(allowed[None, None, :, :], logits, -np.inf)
     weights = np.exp(logits - logits.max(axis=-1, keepdims=True))

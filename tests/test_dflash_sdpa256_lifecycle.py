@@ -32,7 +32,9 @@ async def test_async_consumer_restores_policy_before_next_request(
     engine = dflash.DFlashEngine(model_name="test", draft_model_path="test-draft")
     engine._loaded = True
     engine._tokenizer_obj = engine._executor_tokenizer = SimpleNamespace(
-        decode=lambda *a, **k: "token", eos_token_ids=[2], eos_token_id=2,
+        decode=lambda *a, **k: "token",
+        eos_token_ids=[2],
+        eos_token_id=2,
     )
     engine._prefill_guard = dflash._DFlashPrefillGuard(Mock(), 2048)
     monkeypatch.setattr(engine, "_record_prefill_guard_active_memory", lambda: None)
@@ -41,11 +43,17 @@ async def test_async_consumer_restores_policy_before_next_request(
     monkeypatch.setattr(engine, "_detect_needs_think_prefix", lambda _: False)
     monkeypatch.setattr(dflash, "create_streaming_detokenizer", lambda *a, **k: None)
     flow = SimpleNamespace(
-        snapshot=None, snapshot_service=None, stable_prefix_len=None,
-        cache_active=False, publish_generation_snapshot=False,
-        hit_kind="miss", hit_tokens=0,
+        snapshot=None,
+        snapshot_service=None,
+        stable_prefix_len=None,
+        cache_active=False,
+        publish_generation_snapshot=False,
+        hit_kind="miss",
+        hit_tokens=0,
     )
-    monkeypatch.setattr(PrefixCacheFlow, "for_request", classmethod(lambda cls, **kw: flow))
+    monkeypatch.setattr(
+        PrefixCacheFlow, "for_request", classmethod(lambda cls, **kw: flow)
+    )
     blocked = threading.Event()
     release = threading.Event()
     observed = []
@@ -55,8 +63,9 @@ async def test_async_consumer_restores_policy_before_next_request(
         selected = engine._prefill_guard
         assert sdpa._get_unfused_headroom_provider().__self__._guard is selected
         try:
-            yield TokenEvent(token_id=7, generated_tokens=1,
-                             acceptance_ratio=0.0, cycles_completed=1)
+            yield TokenEvent(
+                token_id=7, generated_tokens=1, acceptance_ratio=0.0, cycles_completed=1
+            )
             if mode[0] == "cancel":
                 blocked.set()
                 assert release.wait(timeout=5), "cancel test did not release worker"
@@ -78,8 +87,9 @@ async def test_async_consumer_restores_policy_before_next_request(
     loop = asyncio.get_running_loop()
     with ThreadPoolExecutor(max_workers=1) as executor:
         monkeypatch.setattr(engine_core, "get_mlx_executor", lambda: executor)
-        await loop.run_in_executor(executor, sdpa.set_unfused_headroom_provider,
-                                   previous.headroom)
+        await loop.run_in_executor(
+            executor, sdpa.set_unfused_headroom_provider, previous.headroom
+        )
         try:
             task = asyncio.create_task(consume())
             if ending == "cancel":
@@ -96,7 +106,9 @@ async def test_async_consumer_restores_policy_before_next_request(
                 result = await asyncio.wait_for(task, timeout=10)
                 if ending == "error":
                     assert result[-1].finish_reason == "error"
-            provider = await loop.run_in_executor(executor, sdpa._get_unfused_headroom_provider)
+            provider = await loop.run_in_executor(
+                executor, sdpa._get_unfused_headroom_provider
+            )
             assert provider.__self__ is previous
             assert observed and observed[0][1] != threading.get_ident()
             assert not engine.has_active_requests()
@@ -107,7 +119,9 @@ async def test_async_consumer_restores_policy_before_next_request(
             await asyncio.wait_for(consume(), timeout=10)
             assert observed[-1][0] is engine._prefill_guard
             assert observed[0][0] is not observed[-1][0]
-            provider = await loop.run_in_executor(executor, sdpa._get_unfused_headroom_provider)
+            provider = await loop.run_in_executor(
+                executor, sdpa._get_unfused_headroom_provider
+            )
             assert provider.__self__ is previous
             assert not engine.has_active_requests()
         finally:

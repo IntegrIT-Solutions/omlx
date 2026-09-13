@@ -50,16 +50,21 @@ def runtime(monkeypatch):
         module.scaled_dot_product_attention = original
         monkeypatch.setitem(sys.modules, name, module)
         modules.append(module)
-    return SimpleNamespace(base=lm_base, original=original, modules=modules, bounded=bounded)
+    return SimpleNamespace(
+        base=lm_base, original=original, modules=modules, bounded=bounded
+    )
 
 
 def assert_bounded(runtime):
     q = SimpleNamespace(shape=(1, 1, 96, 256))
     k = v = SimpleNamespace(shape=(1, 1, 16384, 256))
     for module in [runtime.base, *runtime.modules]:
-        assert module.scaled_dot_product_attention(
-            q, k, v, cache=None, scale=0.0625, mask="causal"
-        ) == "bounded"
+        assert (
+            module.scaled_dot_product_attention(
+                q, k, v, cache=None, scale=0.0625, mask="causal"
+            )
+            == "bounded"
+        )
     runtime.original.assert_not_called()
 
 
@@ -68,11 +73,15 @@ def test_turboquant_before_sdpa_all_dflash_import_orders(runtime, capture):
     assert tq.apply_turboquant_attention_patch()
     if capture == "after_tq":
         for module in runtime.modules:
-            module.scaled_dot_product_attention = runtime.base.scaled_dot_product_attention
+            module.scaled_dot_product_attention = (
+                runtime.base.scaled_dot_product_attention
+            )
     assert sdpa.apply_sdpa256_attention_patch()
     if capture == "after_sdpa":
         for module in runtime.modules:
-            module.scaled_dot_product_attention = runtime.base.scaled_dot_product_attention
+            module.scaled_dot_product_attention = (
+                runtime.base.scaled_dot_product_attention
+            )
     assert_bounded(runtime)
 
 
@@ -154,7 +163,39 @@ def test_forced_unfused_opt_out_is_preserved(runtime, monkeypatch):
     assert sdpa.apply_sdpa256_attention_patch()
     q = SimpleNamespace(shape=(1, 1, 96, 256))
     k = v = SimpleNamespace(shape=(1, 1, 16384, 256))
-    assert runtime.modules[0].scaled_dot_product_attention(
-        q, k, v, cache=None, scale=0.0625, mask="causal"
-    ) == "original"
+    assert (
+        runtime.modules[0].scaled_dot_product_attention(
+            q, k, v, cache=None, scale=0.0625, mask="causal"
+        )
+        == "original"
+    )
     runtime.bounded.assert_not_called()
+
+
+@pytest.mark.parametrize("order", ["fa", "tq_fa", "fa_tq"])
+def test_fa256_provenance_survives_supported_wrapper_chains(
+    runtime, monkeypatch, order
+):
+    from omlx.patches import qwen35_fa256_attention as fa
+
+    monkeypatch.setattr(fa, "_PATCHED", False)
+    monkeypatch.setenv("OMLX_FA256_STEEL", "1")
+    monkeypatch.setenv("OMLX_FA256_DISPATCH_BUDGET", "0")
+    monkeypatch.setattr(fa, "_native_kernel", lambda: Mock())
+    monkeypatch.setattr(fa._fa256_fast, "fa256_supports_dispatch_budget", lambda: True)
+    # Installer integration, not a steel-kernel benchmark. The FA wrapper
+    # delegates to its prior function for this simulated unsupported shape.
+    monkeypatch.setattr(fa, "_should_route", lambda *args: False)
+    if order == "tq_fa":
+        assert tq.apply_turboquant_attention_patch()
+    assert fa.apply_qwen35_fa256_attention_patch()
+    if order == "fa_tq":
+        assert tq.apply_turboquant_attention_patch()
+    assert sdpa.apply_sdpa256_attention_patch()
+    assert_bounded(runtime)
+    installed = runtime.base.scaled_dot_product_attention
+    for module in runtime.modules:
+        module.scaled_dot_product_attention = runtime.original
+    assert sdpa.apply_sdpa256_attention_patch() is False
+    assert runtime.base.scaled_dot_product_attention is installed
+    assert_bounded(runtime)

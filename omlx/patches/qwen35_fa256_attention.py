@@ -278,6 +278,8 @@ def apply_qwen35_fa256_attention_patch(min_kv_len: int | None = None) -> bool:
                     )
             return original_lm_sdpa(queries, keys, values, cache, scale, mask, sinks)
 
+        # SDPA256 must recognize DFlash aliases captured before this wrap.
+        patched_lm_sdpa._omlx_sdpa_original = original_lm_sdpa
         mlx_base.scaled_dot_product_attention = patched_lm_sdpa
         for mod_name, mod in list(sys.modules.items()):
             if mod is None or not mod_name.startswith("mlx_lm.models."):
